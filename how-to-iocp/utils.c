@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <tchar.h>
 
 void printLastError() {
     LPSTR lpBuffer = NULL;
