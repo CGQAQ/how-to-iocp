@@ -21,6 +21,7 @@ enum {
     RET_CODE_ERROR = 255,
 };
 
+void printLastError();
 void eprintf(const char* fmt, ...);
 void unreachable(const char* errmsg);
 
