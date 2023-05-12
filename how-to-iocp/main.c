@@ -14,21 +14,23 @@
 static BOOL hasError = FALSE;
 
 int wmain(int argc, LPWSTR argv[]) {
+#define hBufferSiz (sizeof(HANDLE) * (argc - 1))
+
     if (argc < 2) {
         eprintf("%s [files to listen]\n", argv[0]);
         return RET_CODE_ERROR;
     }
 
-    HANDLE* hFiles = (HANDLE*)malloc(sizeof(HANDLE) * (argc - 1));
+    HANDLE* hFiles = (HANDLE*)malloc(hBufferSiz);
     if (hFiles == NULL) {
         ERRREPORT();
     }
+    memset(hFiles, 0, hBufferSiz);
 
-    memset(hFiles, 0, sizeof(HANDLE) * (argc - 1));
     for (int i = 1; i < argc; ++i) {
         LPWSTR path = argv[i];
 
-        HANDLE file = CreateFileW(
+        HANDLE hFile = CreateFileW(
             path, GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE |
                 FILE_SHARE_DELETE /* listen on file change, so don't prevent
@@ -39,11 +41,33 @@ int wmain(int argc, LPWSTR argv[]) {
                                    the function fails and the last-error code is
                                    set to ERROR_FILE_NOT_FOUND (2). */
             ,
-            FILE_ATTRIBUTE_NORMAL, NULL);
-        if (file == INVALID_HANDLE_VALUE) {
+            FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
             printLastError();
             ERRREPORT();
         }
+        hFiles[i - 1] = hFile;
+    }
+
+    HANDLE* hPorts = (HANDLE*)malloc(hBufferSiz);
+    if (hPorts == NULL) {
+        ERRREPORT();
+    }
+    memset(hPorts, 0, hBufferSiz);
+
+    for (int i = 1; i < argc; ++i) {
+        HANDLE hFile = (HANDLE)hFiles[i - 1];
+        if (hFile == NULL) {
+            ERRREPORT();
+        }
+        HANDLE hPort = CreateIoCompletionPort(hFile, NULL, i,
+                                              0 /* as many as system got*/);
+
+        if (hPort == NULL) {
+            printLastError();
+            ERRREPORT();
+        }
+        hPorts[i - 1] = hPort;
     }
 
 cleanup:

@@ -21,7 +21,13 @@ enum {
     RET_CODE_ERROR = 255,
 };
 
-void printLastError();
+#define printLastError()                        \
+    do {                                        \
+        printf("[%s:%d] ", __FILE__, __LINE__); \
+        _printLastError();                      \
+    } while (0)
+
+void _printLastError();
 void eprintf(const char* fmt, ...);
 void unreachable(const char* errmsg);
 
