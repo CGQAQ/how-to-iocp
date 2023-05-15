@@ -1,3 +1,5 @@
+// #pragma warning(disable : 6385)
+
 #include <Windows.h>
 #include <stdio.h>
 
@@ -21,12 +23,28 @@ int wmain(int argc, LPWSTR argv[]) {
         return RET_CODE_ERROR;
     }
 
+    HANDLE* hPorts = (HANDLE*)malloc(hBufferSiz);
+    if (hPorts == NULL) {
+        ERRREPORT();
+    }
+    memset(hPorts, 0, hBufferSiz);
+
+    for (int i = 1; i < argc; ++i) {
+        HANDLE hPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, i,
+                                              0 /* as many as system got*/);
+
+        if (hPort == NULL) {
+            printLastError();
+            ERRREPORT();
+        }
+        hPorts[i - 1] = hPort;
+    }
+
     HANDLE* hFiles = (HANDLE*)malloc(hBufferSiz);
     if (hFiles == NULL) {
         ERRREPORT();
     }
     memset(hFiles, 0, hBufferSiz);
-
     for (int i = 1; i < argc; ++i) {
         LPWSTR path = argv[i];
 
@@ -41,19 +59,13 @@ int wmain(int argc, LPWSTR argv[]) {
                                    the function fails and the last-error code is
                                    set to ERROR_FILE_NOT_FOUND (2). */
             ,
-            FILE_FLAG_BACKUP_SEMANTICS, NULL);
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
         if (hFile == INVALID_HANDLE_VALUE) {
             printLastError();
             ERRREPORT();
         }
         hFiles[i - 1] = hFile;
     }
-
-    HANDLE* hPorts = (HANDLE*)malloc(hBufferSiz);
-    if (hPorts == NULL) {
-        ERRREPORT();
-    }
-    memset(hPorts, 0, hBufferSiz);
 
     for (int i = 1; i < argc; ++i) {
         HANDLE hFile = (HANDLE)hFiles[i - 1];
@@ -68,6 +80,9 @@ int wmain(int argc, LPWSTR argv[]) {
             ERRREPORT();
         }
         hPorts[i - 1] = hPort;
+    }
+
+    for (;;) {
     }
 
 cleanup:
