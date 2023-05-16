@@ -8,6 +8,7 @@
 #include "utils.h"
 
 #define WCHAR_BUF_SIZ (1024)
+#define BUFFER_SIZE (4096)
 
 #define ERRREPORT()      \
     do {                 \
@@ -17,85 +18,121 @@
 
 static BOOL hasError = FALSE;
 
+typedef struct {
+    OVERLAPPED overlapped;
+    HANDLE directoryHandle;
+    CHAR buffer[BUFFER_SIZE];
+} FileData;
+
 DWORD WINAPI CompletionThread(LPVOID lpParam) {
-    HANDLE completionPort = (HANDLE)lpParam;
+    HANDLE hPort = (HANDLE)lpParam;
 
-    while (1) {
-        DWORD bytesTransferred;
-        ULONG_PTR completionKey;
-        LPOVERLAPPED overlapped;
+    DWORD bytesTransferred;
+    ULONG_PTR completionKey;
+    LPOVERLAPPED overlapped;
 
-        // Wait for completion
-        if (!GetQueuedCompletionStatus(completionPort, &bytesTransferred,
-                                       &completionKey, &overlapped, INFINITE)) {
-            printf("Failed to get completion status: %d\n", GetLastError());
-            return 1;
+    for (;;) {
+        BOOL status = GetQueuedCompletionStatus(
+            hPort, &bytesTransferred, &completionKey, &overlapped, 500);
+
+        if (!status) {
+            int err = GetLastError();
+
+            if (err == WAIT_TIMEOUT) {
+                LOG(L"TIMEOUT\n");
+                continue;
+            }
+
+            unreachable("GetQueuedCompletionStatus error");
         }
 
-        HANDLE changedFileHandle = (HANDLE)completionKey;
+        FileData* fileData = (FileData*)overlapped;
 
-        WCHAR path[MAX_PATH];
-        DWORD len = GetFinalPathNameByHandleW(changedFileHandle, path, MAX_PATH,
-                                              FILE_NAME_NORMALIZED);
+        // Cast the buffer to the correct structure type
+        FILE_NOTIFY_INFORMATION* fileInfo =
+            (FILE_NOTIFY_INFORMATION*)fileData->buffer;
 
-        if (len == 0 || len > MAX_PATH - 1) {
-            fwprintf_s(stderr, L"failed to retrieve path");
-            return 1;
+        while (1) {
+            // Print the file name that was changed
+            wchar_t fileName[MAX_PATH];
+            memcpy(fileName, fileInfo->FileName, fileInfo->FileNameLength);
+            fileName[fileInfo->FileNameLength / sizeof(wchar_t)] = '\0';
+
+            switch (fileInfo->Action) {
+                case FILE_ACTION_ADDED:
+                    wprintf(L"File changed(FILE_ACTION_ADDED): %s\n", fileName);
+                    break;
+                case FILE_ACTION_REMOVED:
+                    wprintf(L"File changed(FILE_ACTION_REMOVED): %s\n",
+                            fileName);
+                    break;
+                case FILE_ACTION_MODIFIED:
+                    wprintf(L"File changed(FILE_ACTION_MODIFIED): %s\n",
+                            fileName);
+                    break;
+                case FILE_ACTION_RENAMED_OLD_NAME:
+                    wprintf(L"File changed(FILE_ACTION_RENAMED_OLD_NAME): %s\n",
+                            fileName);
+                    break;
+                case FILE_ACTION_RENAMED_NEW_NAME:
+                    wprintf(L"File changed(FILE_ACTION_RENAMED_NEW_NAME): %s\n",
+                            fileName);
+                    break;
+                default:
+                    eprintf("Unknown fileInfo#action %u", fileInfo->Action);
+            }
+
+            // Check if there are more changes in the buffer
+            if (fileInfo->NextEntryOffset == 0) break;
+
+            // Move to the next entry in the buffer
+            fileInfo = (FILE_NOTIFY_INFORMATION*)((BYTE*)fileInfo +
+                                                  fileInfo->NextEntryOffset);
         }
-
-        path[len] = 0;
-        LOG(L"\"%s\" changed", (LPWSTR)path);
     }
-    return 0;
 }
 
 int wmain(int argc, LPWSTR argv[]) {
 #define hBufferSiz (sizeof(HANDLE) * (argc - 1))
-    HANDLE* hPorts = NULL;
-    HANDLE* hFiles = NULL;
-    HANDLE* threads = NULL;
+    HANDLE* hDirs = NULL;
+    FileData** fileDatas = NULL;
 
     if (argc < 2) {
-        eprintf("%s [files to listen]\n", argv[0]);
+        eprintf("%s [...directories to listen]\n", argv[0]);
         return RET_CODE_ERROR;
     }
-
-    hPorts = (HANDLE*)malloc(hBufferSiz);
-    if (hPorts == NULL) {
+    HANDLE hPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0,
+                                          0 /* as many as system got*/);
+    if (hPort == NULL) {
+        printLastError();
         ERRREPORT();
     }
-    memset(hPorts, 0, hBufferSiz);
 
-    for (int i = 1; i < argc; ++i) {
-        HANDLE hPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, i,
-                                              0 /* as many as system got*/);
-
-        if (hPort == NULL) {
-            printLastError();
-            ERRREPORT();
-        }
-        hPorts[i - 1] = hPort;
-    }
-
-    hFiles = (HANDLE*)malloc(hBufferSiz);
-    if (hFiles == NULL) {
+    hDirs = (HANDLE*)malloc(hBufferSiz);
+    if (hDirs == NULL) {
         ERRREPORT();
     }
-    memset(hFiles, 0, hBufferSiz);
+    memset(hDirs, 0, hBufferSiz);
     for (int i = 1; i < argc; ++i) {
         LPWSTR path = argv[i];
 
-        WCHAR pathBuf[MAX_PATH];
-        if (GetFullPathNameW(path, MAX_PATH, pathBuf, NULL)) {
-            wprintf_s(L"path is: %s\n", pathBuf);
+        if (!PathIsDirectoryW(path)) {
+            eprintf("Arguments can only be directories!");
+            ERRREPORT();
         }
 
+        WCHAR pathBuf[MAX_PATH];
+        DWORD len = GetFullPathNameW(path, MAX_PATH, pathBuf, NULL);
+        if (len == 0 || len > MAX_PATH - 1) {
+            eprintf("GETFULLNAME failed(%s)", path);
+        }
+        wprintf_s(L"path is: %s\n", pathBuf);
+        pathBuf[len] = 0;
+
         HANDLE hFile = CreateFileW(
-            path, GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE |
-                FILE_SHARE_DELETE /* listen on file change, so don't prevent
-                                     others from change it */
-            ,
+            pathBuf, GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, /* listen on file change, so
+                  don't prevent others from change it */
             NULL, OPEN_EXISTING /* Opens a file or device, only if it exists. If
                                    the specified file or device does not exist,
                                    the function fails and the last-error code is
@@ -107,53 +144,61 @@ int wmain(int argc, LPWSTR argv[]) {
             ERRREPORT();
         }
 
-        WCHAR realPath[MAX_PATH];
-        DWORD len = GetFinalPathNameByHandleW(hFile, realPath, MAX_PATH,
-                                              FILE_NAME_NORMALIZED);
+        LOG(L"\"%s\" listened", (LPWSTR)pathBuf);
+        hDirs[i - 1] = hFile;
 
-        if (len == 0 || len > MAX_PATH - 1) {
-            fwprintf_s(stderr, L"failed to retrieve path");
-            return 1;
-        }
-
-        realPath[len] = 0;
-        LOG(L"\"%s\" listened", (LPWSTR)realPath);
-
-        hFiles[i - 1] = hFile;
-    }
-
-    for (int i = 1; i < argc; ++i) {
-        HANDLE hFile = (HANDLE)hFiles[i - 1];
-        HANDLE hPort = (HANDLE)hPorts[i - 1];
-
-        if (hFile == NULL) {
-            ERRREPORT();
-        }
         HANDLE hPort2 = CreateIoCompletionPort(hFile, hPort, (ULONG_PTR)hFile,
                                                0 /* as many as system got*/);
-
         if (hPort == NULL || hPort != hPort2) {
             printLastError();
             ERRREPORT();
         }
     }
 
-    threads = (HANDLE*)malloc(hBufferSiz);
-    if (threads == NULL) {
-        ERRREPORT();
-    }
-    memset(threads, 0, hBufferSiz);
+    HANDLE thread = CreateThread(NULL, 0, CompletionThread, hPort, 0, NULL);
+
+#define BUF_SIZ (sizeof(FileData*) * (argc - 1))
+    fileDatas = (FileData**)malloc(BUF_SIZ);
+    ZeroMemory(fileDatas, BUF_SIZ);
+#undef BUF_SIZ
+#define BUF_SIZ (sizeof(FileData))
     for (int i = 1; i < argc; ++i) {
-        HANDLE hPort = hPorts[i - 1];
-        threads[i - 1] =
-            CreateThread(NULL, 0, CompletionThread, hPort, 0, NULL);
+        fileDatas[i - 1] = (FileData*)malloc(BUF_SIZ);
+        ZeroMemory(fileDatas[i - 1], BUF_SIZ);
     }
 
-    WaitForMultipleObjects(argc - 1, threads, TRUE, INFINITE);
+    for (;;) {
+        for (int i = 1; i < argc; ++i) {
+            HANDLE hDir = hDirs[i - 1];
+            FileData* data = fileDatas[i - 1];
+            ZeroMemory(data, BUF_SIZ);
+            ZeroMemory(&(data->overlapped), sizeof(OVERLAPPED));
+            data->directoryHandle = hDir;
+            fileDatas[i - 1] = data;
+
+            DWORD bytesRead;
+            if (ReadDirectoryChangesW(
+                    hDir, data->buffer, BUFFER_SIZE, TRUE,
+                    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                        FILE_NOTIFY_CHANGE_ATTRIBUTES |
+                        FILE_NOTIFY_CHANGE_SIZE |
+                        FILE_NOTIFY_CHANGE_LAST_WRITE |
+                        FILE_NOTIFY_CHANGE_LAST_ACCESS |
+                        FILE_NOTIFY_CHANGE_CREATION |
+                        FILE_NOTIFY_CHANGE_SECURITY,
+                    &bytesRead, &(data->overlapped), NULL) == 0) {
+                fprintf(stderr, "Failed to start ReadDirectoryChangesW: %lu\n",
+                        GetLastError());
+                continue;
+            }
+        }
+        Sleep(500);
+    }
+#undef BUF_SIZ
 
 cleanup:
-    if (hFiles != NULL) {
-        for (HANDLE* h = hFiles; h < hFiles + argc - 1; ++h) {
+    if (hDirs != NULL) {
+        for (HANDLE* h = hDirs; h < hDirs + argc - 1; ++h) {
             if (*h != NULL) {
                 // ref:
                 // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew#remarks
@@ -166,7 +211,11 @@ cleanup:
                 CloseHandle(*h);
             }
         }
-        free(hFiles);
+        free(hDirs);
+    }
+
+    if (fileDatas != NULL) {
+        free(fileDatas);
     }
 
     if (hasError) {
