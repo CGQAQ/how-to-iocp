@@ -79,7 +79,7 @@ DWORD WINAPI CompletionThread(LPVOID lpParam) {
                             fileName);
                     break;
                 default:
-                    eprintf("Unknown fileInfo#action %u", fileInfo->Action);
+                    eprintf("Unknown fileInfo#action %lu", fileInfo->Action);
             }
 
             // Check if there are more changes in the buffer
@@ -197,6 +197,10 @@ int wmain(int argc, LPWSTR argv[]) {
 #undef BUF_SIZ
 
 cleanup:
+    if (hPort != NULL) {
+        CloseHandle(hPort);
+    }
+
     if (hDirs != NULL) {
         for (HANDLE* h = hDirs; h < hDirs + argc - 1; ++h) {
             if (*h != NULL) {
@@ -215,7 +219,17 @@ cleanup:
     }
 
     if (fileDatas != NULL) {
+        for (int i = 1; i < argc; ++i) {
+            FileData* f = fileDatas[i - 1];
+            if (f != NULL) {
+                free(f);
+            }
+        }
         free(fileDatas);
+    }
+
+    if (thread != NULL) {
+        CloseHandle(thread);
     }
 
     if (hasError) {
