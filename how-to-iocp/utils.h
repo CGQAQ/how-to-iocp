@@ -7,13 +7,13 @@
 #define LOG(fmt, ...)                                                   \
     do {                                                                \
         time_t current_time;                                            \
-        struct tm* time_info;                                           \
+        struct tm time_info;                                            \
         char time_string[50];                                           \
         time(&current_time);                                            \
-        time_info = localtime(&current_time);                           \
+        localtime_s(&time_info, &current_time);                         \
         strftime(time_string, sizeof(time_string), "%Y-%m-%d %H:%M:%S", \
-                 time_info);                                            \
-        printf("[%s] " fmt, time_string, ##__VA_ARGS__);                \
+                 &time_info);                                           \
+        wprintf(L"[%hs] " fmt, time_string, ##__VA_ARGS__);             \
     } while (0)
 
 enum {

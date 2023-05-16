@@ -1,5 +1,7 @@
 // #pragma warning(disable : 6385)
 
+#include <Shlwapi.h>
+#pragma comment(lib, "Shlwapi.lib")
 #include <Windows.h>
 #include <stdio.h>
 
@@ -15,15 +17,50 @@
 
 static BOOL hasError = FALSE;
 
+DWORD WINAPI CompletionThread(LPVOID lpParam) {
+    HANDLE completionPort = (HANDLE)lpParam;
+
+    while (1) {
+        DWORD bytesTransferred;
+        ULONG_PTR completionKey;
+        LPOVERLAPPED overlapped;
+
+        // Wait for completion
+        if (!GetQueuedCompletionStatus(completionPort, &bytesTransferred,
+                                       &completionKey, &overlapped, INFINITE)) {
+            printf("Failed to get completion status: %d\n", GetLastError());
+            return 1;
+        }
+
+        HANDLE changedFileHandle = (HANDLE)completionKey;
+
+        WCHAR path[MAX_PATH];
+        DWORD len = GetFinalPathNameByHandleW(changedFileHandle, path, MAX_PATH,
+                                              FILE_NAME_NORMALIZED);
+
+        if (len == 0 || len > MAX_PATH - 1) {
+            fwprintf_s(stderr, L"failed to retrieve path");
+            return 1;
+        }
+
+        path[len] = 0;
+        LOG(L"\"%s\" changed", (LPWSTR)path);
+    }
+    return 0;
+}
+
 int wmain(int argc, LPWSTR argv[]) {
 #define hBufferSiz (sizeof(HANDLE) * (argc - 1))
+    HANDLE* hPorts = NULL;
+    HANDLE* hFiles = NULL;
+    HANDLE* threads = NULL;
 
     if (argc < 2) {
         eprintf("%s [files to listen]\n", argv[0]);
         return RET_CODE_ERROR;
     }
 
-    HANDLE* hPorts = (HANDLE*)malloc(hBufferSiz);
+    hPorts = (HANDLE*)malloc(hBufferSiz);
     if (hPorts == NULL) {
         ERRREPORT();
     }
@@ -40,13 +77,18 @@ int wmain(int argc, LPWSTR argv[]) {
         hPorts[i - 1] = hPort;
     }
 
-    HANDLE* hFiles = (HANDLE*)malloc(hBufferSiz);
+    hFiles = (HANDLE*)malloc(hBufferSiz);
     if (hFiles == NULL) {
         ERRREPORT();
     }
     memset(hFiles, 0, hBufferSiz);
     for (int i = 1; i < argc; ++i) {
         LPWSTR path = argv[i];
+
+        WCHAR pathBuf[MAX_PATH];
+        if (GetFullPathNameW(path, MAX_PATH, pathBuf, NULL)) {
+            wprintf_s(L"path is: %s\n", pathBuf);
+        }
 
         HANDLE hFile = CreateFileW(
             path, GENERIC_READ,
@@ -64,26 +106,50 @@ int wmain(int argc, LPWSTR argv[]) {
             printLastError();
             ERRREPORT();
         }
+
+        WCHAR realPath[MAX_PATH];
+        DWORD len = GetFinalPathNameByHandleW(hFile, realPath, MAX_PATH,
+                                              FILE_NAME_NORMALIZED);
+
+        if (len == 0 || len > MAX_PATH - 1) {
+            fwprintf_s(stderr, L"failed to retrieve path");
+            return 1;
+        }
+
+        realPath[len] = 0;
+        LOG(L"\"%s\" listened", (LPWSTR)realPath);
+
         hFiles[i - 1] = hFile;
     }
 
     for (int i = 1; i < argc; ++i) {
         HANDLE hFile = (HANDLE)hFiles[i - 1];
+        HANDLE hPort = (HANDLE)hPorts[i - 1];
+
         if (hFile == NULL) {
             ERRREPORT();
         }
-        HANDLE hPort = CreateIoCompletionPort(hFile, NULL, i,
-                                              0 /* as many as system got*/);
+        HANDLE hPort2 = CreateIoCompletionPort(hFile, hPort, (ULONG_PTR)hFile,
+                                               0 /* as many as system got*/);
 
-        if (hPort == NULL) {
+        if (hPort == NULL || hPort != hPort2) {
             printLastError();
             ERRREPORT();
         }
-        hPorts[i - 1] = hPort;
     }
 
-    for (;;) {
+    threads = (HANDLE*)malloc(hBufferSiz);
+    if (threads == NULL) {
+        ERRREPORT();
     }
+    memset(threads, 0, hBufferSiz);
+    for (int i = 1; i < argc; ++i) {
+        HANDLE hPort = hPorts[i - 1];
+        threads[i - 1] =
+            CreateThread(NULL, 0, CompletionThread, hPort, 0, NULL);
+    }
+
+    WaitForMultipleObjects(argc - 1, threads, TRUE, INFINITE);
 
 cleanup:
     if (hFiles != NULL) {
