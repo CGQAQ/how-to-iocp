@@ -10,10 +10,11 @@
 #define WCHAR_BUF_SIZ (1024)
 #define BUFFER_SIZE (4096)
 
-#define ERRREPORT()      \
-    do {                 \
-        hasError = TRUE; \
-        goto cleanup;    \
+#define ERRREPORT()       \
+    do {                  \
+        hasError = TRUE;  \
+        printLastError(); \
+        goto cleanup;     \
     } while (0)
 
 static BOOL hasError = FALSE;
@@ -95,6 +96,7 @@ DWORD WINAPI CompletionThread(LPVOID lpParam) {
 int wmain(int argc, LPWSTR argv[]) {
 #define hBufferSiz (sizeof(HANDLE) * (argc - 1))
     HANDLE* hDirs = NULL;
+    HANDLE thread = NULL;
     FileData** fileDatas = NULL;
 
     if (argc < 2) {
@@ -104,7 +106,6 @@ int wmain(int argc, LPWSTR argv[]) {
     HANDLE hPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0,
                                           0 /* as many as system got*/);
     if (hPort == NULL) {
-        printLastError();
         ERRREPORT();
     }
 
@@ -112,7 +113,7 @@ int wmain(int argc, LPWSTR argv[]) {
     if (hDirs == NULL) {
         ERRREPORT();
     }
-    memset(hDirs, 0, hBufferSiz);
+    ZeroMemory(hDirs, hBufferSiz);
     for (int i = 1; i < argc; ++i) {
         LPWSTR path = argv[i];
 
@@ -140,7 +141,6 @@ int wmain(int argc, LPWSTR argv[]) {
             ,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
         if (hFile == INVALID_HANDLE_VALUE) {
-            printLastError();
             ERRREPORT();
         }
 
@@ -150,20 +150,29 @@ int wmain(int argc, LPWSTR argv[]) {
         HANDLE hPort2 = CreateIoCompletionPort(hFile, hPort, (ULONG_PTR)hFile,
                                                0 /* as many as system got*/);
         if (hPort == NULL || hPort != hPort2) {
-            printLastError();
             ERRREPORT();
         }
     }
 
-    HANDLE thread = CreateThread(NULL, 0, CompletionThread, hPort, 0, NULL);
+    thread = CreateThread(NULL, 0, CompletionThread, hPort, 0, NULL);
+
+    if (thread == NULL) {
+        ERRREPORT();
+    }
 
 #define BUF_SIZ (sizeof(FileData*) * (argc - 1))
     fileDatas = (FileData**)malloc(BUF_SIZ);
+    if (fileDatas == NULL) {
+        ERRREPORT();
+    }
     ZeroMemory(fileDatas, BUF_SIZ);
 #undef BUF_SIZ
 #define BUF_SIZ (sizeof(FileData))
     for (int i = 1; i < argc; ++i) {
         fileDatas[i - 1] = (FileData*)malloc(BUF_SIZ);
+        if (fileDatas[i - 1] == NULL) {
+            ERRREPORT();
+        }
         ZeroMemory(fileDatas[i - 1], BUF_SIZ);
     }
 
